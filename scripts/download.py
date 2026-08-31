@@ -66,7 +66,7 @@ def download_url(url: str, out_dir: Path) -> dict:
     out_dir.mkdir(parents=True, exist_ok=True)
     output_template = str(out_dir / "video.%(ext)s")
 
-    cmd = [
+    base = [
         "yt-dlp",
         "-N", "8",
         "-f", "bv*[height<=720]+ba/b[height<=720]/bv+ba/b",
@@ -80,14 +80,28 @@ def download_url(url: str, out_dir: Path) -> dict:
         "--no-playlist",
         "--ignore-errors",
         "-o", output_template,
-        "--",
-        url,
     ]
 
     # yt-dlp may exit non-zero if a subtitle variant fails (e.g. 429) even when
     # the video itself downloaded fine. Treat "video file present" as success.
-    result = subprocess.run(cmd, stdout=sys.stderr, stderr=sys.stderr)
+    result = subprocess.run(base + ["--", url], stdout=sys.stderr, stderr=sys.stderr)
     video = _pick_video(out_dir)
+
+    # YouTube increasingly serves 403 / "confirm you're not a bot" to the default
+    # player client while still handing over subtitles. Retry the stream with
+    # other clients before giving up on frames.
+    if video is None and is_url(url):
+        for client in ("android", "web_safari", "ios", "mweb", "tv_embedded"):
+            print(f"[watch] stream failed; retrying player_client={client}…", file=sys.stderr)
+            subprocess.run(
+                base + ["--extractor-args", f"youtube:player_client={client}", "--", url],
+                stdout=sys.stderr, stderr=sys.stderr,
+            )
+            video = _pick_video(out_dir)
+            if video is not None:
+                print(f"[watch] stream recovered via player_client={client}", file=sys.stderr)
+                break
+
     if video is None:
         raise SystemExit(
             f"yt-dlp did not produce a video file in {out_dir} (exit {result.returncode})"
